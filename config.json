@@ -1,0 +1,41 @@
+{
+  "dataset": {
+    "name": "katarinagresova/Genomic_Benchmarks_demo_coding_vs_intergenomic_seqs",
+    "streaming": true,
+    "train_samples": 20000,
+    "test_samples": 5000
+  },
+  "model": {
+    "vocab_size": 5,
+    "embedding_dim": 64,
+    "hidden_size": 128,
+    "num_layers": 2,
+    "num_classes": 2,
+    "dropout": 0.3
+  },
+  "training": {
+    "epochs": 20,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "batch_size": 128,
+    "gradient_clip_max_norm": 1.0,
+    "batch_delay_seconds": 0.01
+  },
+  "data": {
+    "seq_length": 100,
+    "encoding": {
+      "A": 0,
+      "C": 1,
+      "G": 2,
+      "T": 3,
+      "N": 4
+    }
+  },
+  "checkpoint": {
+    "epochs": [5, 10, 15, 20]
+  },
+  "output": {
+    "weights_file": "model_weights.safetensors",
+    "plots_dir": "plots"
+  }
+}
