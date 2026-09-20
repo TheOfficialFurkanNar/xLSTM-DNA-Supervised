@@ -1,4 +1,4 @@
-# xLSTM for Genomic Sequence Classification
+# Supervised xLSTM for Genomic Sequence Classification
 
 This project implements an xLSTM (Extended LSTM) model for classifying genomic DNA sequences as coding vs. intergenomic regions using the Hugging Face Genomic Benchmarks dataset.
 
@@ -72,7 +72,7 @@ The model achieves high accuracy on this task because cDNA sequences have distin
 
 ![Accuracy progress](./accuracy.jpg)
 As seen in the plot, the model achieves a perfect score
-easily due to the fact that the dataset is linearly seperable.
+easily due to the fact that the dataset's complexity remains easy for the Neural Network.
 
 ![F1 score progress](./f1_score.jpg)
 The model achieves a perfect F1 score, making it
@@ -89,3 +89,4 @@ has learned the task well.
 - The model uses official train/test splits to avoid data leakage
 - All metrics are tracked at epochs [5, 10, 15, 20] for evaluation
 - The model's complexity remains trivial as of its current state.
+- The model is based off of supervised learning.
