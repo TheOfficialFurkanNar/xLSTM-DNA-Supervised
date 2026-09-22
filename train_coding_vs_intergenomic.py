@@ -1,4 +1,4 @@
-# train.py
+# train_coding_vs_intergenomic.py
 import os
 os.environ['HF_HOME'] = os.path.join(os.getcwd(), 'hf_home')
 os.environ['HF_DATASETS_CACHE'] = os.path.join(os.getcwd(), 'hf_home', 'datasets')
@@ -12,27 +12,37 @@ from tqdm import tqdm
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import f1_score
-from safetensors.torch import save_file
 from model import sLSTM, mLSTM
 import time
+import argparse
+import json
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters())
 
 
 class xLSTM(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_size, num_layers=2, num_classes=2, dropout=0.3):
+    def __init__(self, vocab_size, embedding_dim, hidden_size, num_layers=2, num_classes=2, dropout=0.3,
+                 layer_type='alternating', use_exp_gating=True, use_stabilizer=True, 
+                 use_normalizer=True, use_memory_mixing=True):
         super(xLSTM, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.dropout = nn.Dropout(dropout)
         
-        # Stack of LSTM layers (alternating sLSTM and mLSTM)
+        # Stack of LSTM layers based on layer_type
         self.layers = nn.ModuleList()
         for i in range(num_layers):
-            if i % 2 == 0:
-                self.layers.append(sLSTM(embedding_dim if i == 0 else hidden_size, hidden_size))
-            else:
-                self.layers.append(mLSTM(embedding_dim if i == 0 else hidden_size, hidden_size))
+            input_dim = embedding_dim if i == 0 else hidden_size
+            
+            if layer_type == 'slstm':
+                self.layers.append(sLSTM(input_dim, hidden_size, use_exp_gating, use_stabilizer, use_normalizer, use_memory_mixing))
+            elif layer_type == 'mlstm':
+                self.layers.append(mLSTM(input_dim, hidden_size, use_exp_gating, use_stabilizer, use_normalizer))
+            else:  # alternating
+                if i % 2 == 0:
+                    self.layers.append(sLSTM(input_dim, hidden_size, use_exp_gating, use_stabilizer, use_normalizer, use_memory_mixing))
+                else:
+                    self.layers.append(mLSTM(input_dim, hidden_size, use_exp_gating, use_stabilizer, use_normalizer))
         
         self.output_proj = nn.Linear(hidden_size, num_classes)
     
@@ -94,7 +104,7 @@ class DNADataset(Dataset):
         return torch.tensor(encoded, dtype=torch.long), torch.tensor(label, dtype=torch.long)
 
 
-def train_model(model, train_loader, test_loader, device, epochs=20, lr=5e-3, checkpoint_epochs=[5, 10, 15, 20]):
+def train_model(model, train_loader, test_loader, device, epochs=20, lr=5e-3, checkpoint_epochs=[5, 10, 15, 20], log_file=None, config=None):
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = nn.CrossEntropyLoss()
@@ -108,6 +118,14 @@ def train_model(model, train_loader, test_loader, device, epochs=20, lr=5e-3, ch
         'train_loss': {},
         'test_loss': {}
     }
+    
+    # Open log file if specified
+    log_fp = None
+    if log_file:
+        log_fp = open(log_file, 'w')
+        # Write configuration as first line
+        if config:
+            log_fp.write(json.dumps({'type': 'config', **config}) + '\n')
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -118,7 +136,7 @@ def train_model(model, train_loader, test_loader, device, epochs=20, lr=5e-3, ch
         all_labels = []
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}")
-        for X_batch, y_batch in pbar:
+        for step, (X_batch, y_batch) in enumerate(pbar):
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             logits = model(X_batch)
@@ -133,7 +151,20 @@ def train_model(model, train_loader, test_loader, device, epochs=20, lr=5e-3, ch
             all_preds.extend(logits.argmax(dim=-1).cpu().numpy())
             all_labels.extend(y_batch.cpu().numpy())
             
-            pbar.set_postfix({'loss': f"{loss.item():.4f}", 'acc': f"{correct/total:.3f}"})
+            step_acc = correct / total
+            pbar.set_postfix({'loss': f"{loss.item():.4f}", 'acc': f"{step_acc:.3f}"})
+            
+            # Log step progress
+            if log_fp:
+                log_entry = {
+                    'type': 'step',
+                    'epoch': epoch,
+                    'step': step,
+                    'loss': loss.item(),
+                    'accuracy': step_acc,
+                    'samples_processed': total
+                }
+                log_fp.write(json.dumps(log_entry) + '\n')
             
             # Small delay to reduce GPU heat
             time.sleep(0.01)
@@ -143,6 +174,17 @@ def train_model(model, train_loader, test_loader, device, epochs=20, lr=5e-3, ch
         train_acc = correct / total
         avg_loss = total_loss / total
         train_f1 = f1_score(all_labels, all_preds, average='weighted')
+        
+        # Log epoch summary
+        if log_fp:
+            log_entry = {
+                'type': 'epoch',
+                'epoch': epoch,
+                'train_loss': avg_loss,
+                'train_accuracy': train_acc,
+                'train_f1': train_f1
+            }
+            log_fp.write(json.dumps(log_entry) + '\n')
 
         # Evaluate at checkpoint epochs
         if epoch in checkpoint_epochs:
@@ -176,10 +218,25 @@ def train_model(model, train_loader, test_loader, device, epochs=20, lr=5e-3, ch
             metrics['train_loss'][epoch] = avg_loss
             metrics['test_loss'][epoch] = test_avg_loss
             
+            # Log test evaluation
+            if log_fp:
+                log_entry = {
+                    'type': 'evaluation',
+                    'epoch': epoch,
+                    'test_loss': test_avg_loss,
+                    'test_accuracy': test_acc,
+                    'test_f1': test_f1
+                }
+                log_fp.write(json.dumps(log_entry) + '\n')
+            
             print(f"Epoch {epoch:2d} | Train Acc: {train_acc:.3f} | Test Acc: {test_acc:.3f} | Train F1: {train_f1:.3f} | Test F1: {test_f1:.3f} | Train Loss: {avg_loss:.4f} | Test Loss: {test_avg_loss:.4f}")
             model.train()
         else:
             print(f"Epoch {epoch:2d}/{epochs} | Loss: {avg_loss:.4f} | Train Acc: {train_acc:.3f} | Train F1: {train_f1:.3f}")
+    
+    # Close log file
+    if log_fp:
+        log_fp.close()
 
     return metrics
 
@@ -231,9 +288,50 @@ def plot_metrics(metrics, checkpoint_epochs, output_dir='.'):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='xLSTM DNA Classification with Ablation Studies')
+    
+    # Component toggles
+    parser.add_argument('--no-exp-gating', action='store_true', help='Disable exponential gating')
+    parser.add_argument('--no-stabilizer', action='store_true', help='Disable stabilizer gate')
+    parser.add_argument('--no-normalizer', action='store_true', help='Disable normalizer')
+    parser.add_argument('--no-memory-mixing', action='store_true', help='Disable memory mixing')
+    
+    # Layer type
+    parser.add_argument('--layer-type', type=str, default='alternating', choices=['slstm', 'mlstm', 'alternating'],
+                        help='Type of LSTM layers to use')
+    
+    # Parameter scaling
+    parser.add_argument('--scale', type=str, default='medium', choices=['tiny', 'small', 'medium', 'large', 'xlarge'],
+                        help='Model scale for parameter count (tiny~20k, small~50k, medium~100k, large~250k, xlarge~330k)')
+    
+    # Training parameters
+    parser.add_argument('--epochs', type=int, default=20, help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--batch-size', type=int, default=128, help='Batch size')
+    
+    args = parser.parse_args()
+    
+    # Set component flags
+    use_exp_gating = not args.no_exp_gating
+    use_stabilizer = not args.no_stabilizer
+    use_normalizer = not args.no_normalizer
+    use_memory_mixing = not args.no_memory_mixing
+    
+    # Set parameter scale
+    scale_configs = {
+        'tiny': (32, 64, 1),
+        'small': (32, 128, 2),
+        'medium': (64, 128, 2),
+        'large': (64, 256, 2),
+        'xlarge': (128, 256, 2)
+    }
+    embedding_dim, hidden_size, num_layers = scale_configs[args.scale]
+    
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    print(f"Configuration: exp_gating={use_exp_gating}, stabilizer={use_stabilizer}, normalizer={use_normalizer}, memory_mixing={use_memory_mixing}")
+    print(f"Layer type: {args.layer_type}, Scale: {args.scale} (emb={embedding_dim}, hid={hidden_size}, layers={num_layers})")
     
     # Load dataset
     print("Loading dataset from Hugging Face...")
@@ -275,38 +373,78 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
-    # Create xLSTM model with smaller size to prevent overfitting
-    vocab_size = 5  # A, C, G, T, N
-    embedding_dim = 64
-    hidden_size = 128
-    num_layers = 2
+    # Create xLSTM model
+    vocab_size = 5
     num_classes = 2
     dropout = 0.3
     
-    model = xLSTM(vocab_size, embedding_dim, hidden_size, num_layers, num_classes, dropout).to(device)
+    model = xLSTM(vocab_size, embedding_dim, hidden_size, num_layers, num_classes, dropout,
+                 args.layer_type, use_exp_gating, use_stabilizer, use_normalizer, use_memory_mixing).to(device)
     param_count = count_parameters(model)
     print(f"Model parameters: {param_count:,}")
     
+    # Generate log file name and config
+    log_filename = f"train_log_{args.scale}_{args.layer_type}_exp{use_exp_gating}_stab{use_stabilizer}_norm{use_normalizer}_mix{use_memory_mixing}.jsonl"
+    
+    # Explicitly list disabled components
+    disabled_components = []
+    if not use_exp_gating:
+        disabled_components.append('exponential_gating')
+    if not use_stabilizer:
+        disabled_components.append('stabilizer')
+    if not use_normalizer:
+        disabled_components.append('normalizer')
+    if not use_memory_mixing:
+        disabled_components.append('memory_mixing')
+    
+    config = {
+        'scale': args.scale,
+        'layer_type': args.layer_type,
+        'components': {
+            'exponential_gating': use_exp_gating,
+            'stabilizer': use_stabilizer,
+            'normalizer': use_normalizer,
+            'memory_mixing': use_memory_mixing
+        },
+        'disabled_components': disabled_components if disabled_components else 'none',
+        'model_config': {
+            'embedding_dim': embedding_dim,
+            'hidden_size': hidden_size,
+            'num_layers': num_layers,
+            'vocab_size': vocab_size,
+            'num_classes': num_classes,
+            'dropout': dropout,
+            'total_parameters': param_count
+        },
+        'training_config': {
+            'epochs': args.epochs,
+            'lr': args.lr,
+            'batch_size': batch_size,
+            'seq_length': seq_length
+        },
+        'dataset': {
+            'train_samples': len(train_seqs),
+            'test_samples': len(test_seqs)
+        }
+    }
+    
     # Train model
     checkpoint_epochs = [5, 10, 15, 20]
-    metrics = train_model(model, train_loader, test_loader, device, epochs=20, lr=1e-3, checkpoint_epochs=checkpoint_epochs)
+    metrics = train_model(model, train_loader, test_loader, device, epochs=args.epochs, lr=args.lr, checkpoint_epochs=checkpoint_epochs, log_file=log_filename, config=config)
+    print(f"Training log saved to {log_filename}")
     
-    # Save model weights in safetensors format
-    print("Saving model weights in safetensors format...")
-    state_dict = model.state_dict()
-    metadata = {
-        'vocab_size': str(vocab_size),
-        'embedding_dim': str(embedding_dim),
-        'hidden_size': str(hidden_size),
-        'num_layers': str(num_layers),
-        'num_classes': str(num_classes),
-        'total_parameters': str(param_count),
-        'seq_length': str(seq_length),
-        'train_samples': str(len(train_seqs)),
-        'test_samples': str(len(test_seqs))
-    }
-    save_file(state_dict, "model_weights.safetensors", metadata=metadata)
-    print("Model weights and metadata saved to model_weights.safetensors")
+    # Print ablation results summary
+    final_test_acc = metrics['test_acc'][max(metrics['test_acc'].keys())]
+    final_test_f1 = metrics['test_f1'][max(metrics['test_f1'].keys())]
+    print("\n" + "="*80)
+    print("ABLATION RESULTS SUMMARY")
+    print("="*80)
+    print(f"Parameters: {param_count:,}")
+    print(f"Scale: {args.scale} | Layer Type: {args.layer_type}")
+    print(f"Exp Gating: {use_exp_gating} | Stabilizer: {use_stabilizer} | Normalizer: {use_normalizer} | Memory Mixing: {use_memory_mixing}")
+    print(f"Final Test Accuracy: {final_test_acc:.4f}")
+    print(f"Final Test F1: {final_test_f1:.4f}")
+    print("="*80)
     
     # Plot metrics
     plot_metrics(metrics, checkpoint_epochs)

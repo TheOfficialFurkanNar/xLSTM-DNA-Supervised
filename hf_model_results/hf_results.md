@@ -70,14 +70,14 @@ Generated in `plots/` directory:
 
 The model achieves high accuracy on this task because cDNA sequences have distinct, easily separable patterns between coding and intergenomic regions. The xLSTM architecture effectively captures these sequence patterns.
 
-![Accuracy progress](./accuracy.jpg)
+![Accuracy progress](accuracy.jpg)
 As seen in the plot, the model achieves a perfect score
 easily due to the fact that the dataset's complexity remains easy for the Neural Network.
 
-![F1 score progress](./f1_score.jpg)
+![F1 score progress](f1_score.jpg)
 The model achieves a perfect F1 score, making it
 reliable for this specific narrow task.
-![Loss progress](./loss.jpg)
+![Loss progress](loss.jpg)
 Just like other metrics, the loss quickly
 approached zero, indicating that the model
 has learned the task well.
