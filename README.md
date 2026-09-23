@@ -26,7 +26,7 @@ xLSTM combines scalar LSTMs (sLSTM) and matrix LSTMs (mLSTM) in an alternating a
    - Without: Falls back to standard sigmoid gates
 
 2. **Stabilizer Gate**: Prevents numerical overflow in exponential operations
-   - Computes: $ \text{stab} = \max(\log_{\text{forget}} + \text{stab}_{\text{prev}}, \log_{\text{input}}) $
+   - Computes: Computes: $\text{stab} = \max\left(\log(\text{forget}) + \text{stab}_{\text{prev}}, \log(\text{input})\right)$
    - Without: Unstabilized exponential gates (may overflow)
 
 3. **Normalizer**: Tracks cumulative gate values for stable normalization
